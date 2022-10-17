@@ -1,0 +1,336 @@
+---
+title: "chapter5 examples"
+author: "Hao He"
+date: "2022-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(tidyverse)
+library(ggraph)
+library(stringr)
+library(tm)
+
+```
+
+most of the existing R tools for natural language processing, besides the tidytext package, aren’t compatible with this tidy text format. 
+
+This chapter focuses on the “glue” that connects the tidy text format with other important packages and data structures.
+
+# Tidying a document-term matrix
+one of most common sructure: DTM
+Since most pairings of document and term do not occur (they have the value zero), DTMs are usually implemented as sparse matrices.
+
+Conversion between DTM and tidy data frame:
+
+*tidy()* turns a document-term matrix into a tidy data frame.
+
+*cast()* turns a tidy one-term-per-row data frame into a matrix. 
+tidytext provides three variations of this verb, each converting to a different type of matrix: 
+cast_sparse() (converting to a sparse matrix from the Matrix package), 
+cast_dtm() (converting to a DocumentTermMatrix object from tm), 
+and cast_dfm() (converting to a dfm object from quanteda).
+
+
+a DTM is typically comparable to a tidy data frame after a count or a group_by/summarize that contains counts or another statistic for each combination of a term and document.
+
+
+## Tidying DocumentTermMatrix objects
+```{r}
+library(tm)
+
+data("AssociatedPress", package = "topicmodels")
+AssociatedPress
+#> <<DocumentTermMatrix (documents: 2246, terms: 10473)>>
+#> Non-/sparse entries: 302031/23220327
+#> Sparsity           : 99%
+#> Maximal term length: 18
+#> Weighting          : term frequency (tf)
+
+
+# documents are AP articles, terms are distinct words.
+# Here DTM is 99% sparse (99% of document-word pairs are zero).
+
+terms <- Terms(AssociatedPress)
+head(terms)
+```
+
+tidy this matrix into tidy data frame with one-token-per-document-per-row.: *tidy()* 
+```{r}
+library(dplyr)
+library(tidytext)
+
+# transform rows(doc) and cols(term) into a tidy df
+ap_td <- tidy(AssociatedPress)
+ap_td
+#> # A tibble: 302,031 × 3
+#>    document term       count
+#>       <int> <chr>      <dbl>
+#>  1        1 adding         1
+#>  2        1 adult          2
+#>  3        1 ago            1
+#>  4        1 alcohol        1
+#>  5        1 allegedly      1
+#>  6        1 allen          1
+#>  7        1 apparently     2
+#>  8        1 appeared       1
+#>  9        1 arrested       1
+#> 10        1 assault        1
+#> # … with 302,021 more rows
+```
+This tidying operation is similar to the melt() function from the reshape2 package (Wickham 2007) for non-sparse matrices.
+
+*Notice that only the non-zero values are included in the tidied output: document 1 includes terms such as “adding” and “adult”, but not “aaron” or “abandon”. This means the tidied version has no rows where count is zero*.
+
+
+Then, sentiment analysis on these newspaper articles
+```{r}
+ap_sentiments <- ap_td %>%
+  inner_join(get_sentiments("bing"), by = c(term = "word"))
+
+ap_sentiments
+
+
+# visualization of sentiment analysis
+library(ggplot2)
+
+ap_sentiments %>%
+  count(sentiment, term, wt = count) %>%
+  ungroup() %>%
+  filter(n >= 200) %>%
+  mutate(n = ifelse(sentiment == "negative", -n, n)) %>%
+  mutate(term = reorder(term, n)) %>%
+  ggplot(aes(n, term, fill = sentiment)) +
+  geom_col() +
+  labs(x = "Contribution to sentiment", y = NULL)
+```
+## Tidying dfm object
+alternative implementations of document-term matrices: dfm
+
+```{r}
+data("data_corpus_inaugural", package = "quanteda")
+inaug_dfm <- data_corpus_inaugural %>%
+  quanteda::tokens() %>%
+  quanteda::dfm(verbose = FALSE)
+inaug_dfm
+#> Document-feature matrix of: 59 documents, 9,439 features (91.84% sparse) and 4 docvars.
+```
+
+turning them into a one-token-per-document-per-row table: *tidy()*
+
+```{r}
+inaug_td <- tidy(inaug_dfm)
+inaug_td
+#> # A tibble: 45,453 × 3
+#>    document        term            count
+#>    <chr>           <chr>           <dbl>
+#>  1 1789-Washington fellow-citizens     1
+#>  2 1797-Adams      fellow-citizens     3
+#>  3 1801-Jefferson  fellow-citizens     2
+#>  4 1809-Madison    fellow-citizens     1
+#>  5 1813-Madison    fellow-citizens     1
+#>  6 1817-Monroe     fellow-citizens     5
+#>  7 1821-Monroe     fellow-citizens     1
+#>  8 1841-Harrison   fellow-citizens    11
+#>  9 1845-Polk       fellow-citizens     1
+#> 10 1849-Taylor     fellow-citizens     1
+#> # … with 45,443 more rows
+```
+
+
+analysis: words most specific to each of the inaugural speeches. 
+```{r}
+inaug_tf_idf <- inaug_td %>%
+  bind_tf_idf(term, document, count) %>%
+  arrange(desc(tf_idf))
+
+inaug_tf_idf
+#> # A tibble: 45,453 × 6
+#>    document        term        count      tf   idf tf_idf
+#>    <chr>           <chr>       <dbl>   <dbl> <dbl>  <dbl>
+#>  1 1793-Washington arrive          1 0.00680  4.08 0.0277
+#>  2 1793-Washington upbraidings     1 0.00680  4.08 0.0277
+#>  3 1793-Washington violated        1 0.00680  3.38 0.0230
+#>  4 1793-Washington willingly       1 0.00680  3.38 0.0230
+#>  5 1793-Washington incurring       1 0.00680  3.38 0.0230
+#>  6 1793-Washington previous        1 0.00680  2.98 0.0203
+#>  7 1793-Washington knowingly       1 0.00680  2.98 0.0203
+#>  8 1793-Washington injunctions     1 0.00680  2.98 0.0203
+#>  9 1793-Washington witnesses       1 0.00680  2.98 0.0203
+#> 10 1793-Washington besides         1 0.00680  2.69 0.0183
+#> # … with 45,443 more rows
+
+
+# use this data to pick four notable inaugural addresses (from Presidents Lincoln, Roosevelt, Kennedy, and Obama)
+# visualization
+
+library(ggplot2)
+
+ inaug_tf_idf %>% 
+   filter(document == '1861-Lincoln'|document == '1933-Roosevelt'|document == '1961-Kennedy'|document == '2009-Obama') %>% 
+   mutate(document = factor(document, levels = c('1861-Lincoln', '1933-Roosevelt', '1961-Kennedy', '2009-Obama'))) %>%
+  group_by(document) %>% 
+  slice_max(tf_idf, n = 10) %>%
+  ungroup() %>%
+  mutate(term = fct_reorder(term, tf_idf)) %>% 
+  ggplot(aes(tf_idf, term, fill = document)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~document, ncol = 2, scales = "free") +
+  labs(x = "tf-idf", y = NULL)
+
+```
+
+
+
+### another example:
+we could extract the year from each document’s name, and compute the total number of words within each year.
+```{r}
+library(tidyr)
+
+year_term_counts <- inaug_td %>%
+  extract(document, "year", "(\\d+)", convert = TRUE) %>%
+  complete(year, term, fill = list(count = 0)) %>%
+  group_by(year) %>%
+  mutate(year_total = sum(count))
+
+# used tidyr’s complete() function to include zeroes (cases where a word didn’t appear in a document) in the table.
+
+
+
+# visualization
+
+year_term_counts %>%
+  filter(term %in% c("god", "america", "foreign", "union", "constitution", "freedom")) %>%
+  ggplot(aes(year, count / year_total)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~ term, scales = "free_y") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "% frequency of word in inaugural address")
+```
+
+
+# Casting tidy text data into a sparse matrix 
+use cast_dtm() function
+
+take the tidied AP dataset and cast it back into a document-term matrix using the cast_dtm() function.
+```{r}
+ap_td %>%
+  cast_dtm(document, term, count)
+#> <<DocumentTermMatrix (documents: 2246, terms: 10473)>>
+#> Non-/sparse entries: 302031/23220327
+#> Sparsity           : 99%
+#> Maximal term length: 18
+#> Weighting          : term frequency (tf)
+```
+
+Similarly, we could cast the tidy table into a dfm object from quanteda’s dfm with cast_dfm().
+```{r}
+ap_td %>%
+  cast_dfm(document, term, count)
+#> Document-feature matrix of: 2,246 documents, 10,473 features (98.72% sparse) and 0 docvars.
+```
+
+Some tools simply require a sparse matrix to convert it back:
+```{r}
+library(Matrix)
+
+# cast into a Matrix object
+m <- ap_td %>%
+  cast_sparse(document, term, count)
+
+class(m)
+#> [1] "dgCMatrix"
+#> attr(,"package")
+#> [1] "Matrix"
+dim(m)
+#> [1]  2246 10473
+```
+
+
+####  examples on Jane Austen's books
+```{r}
+library(janeaustenr)
+
+austen_dtm <- austen_books() %>%
+  unnest_tokens(word, text) %>%
+  count(book, word) %>%
+  cast_dtm(book, word, n)
+# the last line above converts tidy table into dtm
+
+
+austen_dtm
+#> <<DocumentTermMatrix (documents: 6, terms: 14520)>>
+#> Non-/sparse entries: 40379/46741
+#> Sparsity           : 54%
+#> Maximal term length: 19
+#> Weighting          : term frequency (tf)
+
+This casting process allows for reading, filtering, and processing to be done using dplyr and other tidy tools, after which the data can be converted into a document-term matrix for machine learning applications. 
+```
+
+
+
+# Tidying corpus objects with metadata
+e.g. : mining financial articles
+
+Corpus are designed to store document collections before tokenization.
+
+
+For example, the tm package comes with the acq corpus, containing 50 articles from the news service Reuters.
+```{r}
+data("acq")
+acq
+#> <<VCorpus>>
+#> Metadata:  corpus specific: 0, document level (indexed): 0
+#> Content:  documents: 50
+
+# first document
+acq[[1]]
+#> <<PlainTextDocument>>
+#> Metadata:  15
+#> Content:  chars: 1287
+```
+
+construct a tidy table
+```{r}
+acq_td <- tidy(acq)
+acq_td
+
+# unnest_tokens() to find the most common words across the 50 Reuters articles, or the ones most specific to each article.
+acq_tokens <- acq_td %>%
+  select(-places) %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word")
+
+# most common words
+acq_tokens %>%
+  count(word, sort = TRUE)
+
+
+# tf-idf
+acq_tokens %>%
+  count(id, word) %>%
+  bind_tf_idf(word, id, n) %>%
+  arrange(desc(tf_idf))
+#> # A tibble: 2,853 × 6
+#>    id    word         n     tf   idf tf_idf
+#>    <chr> <chr>    <int>  <dbl> <dbl>  <dbl>
+#>  1 186   groupe       2 0.133   3.91  0.522
+#>  2 128   liebert      3 0.130   3.91  0.510
+#>  3 474   esselte      5 0.109   3.91  0.425
+#>  4 371   burdett      6 0.103   3.91  0.405
+#>  5 442   hazleton     4 0.103   3.91  0.401
+#>  6 199   circuit      5 0.102   3.91  0.399
+#>  7 162   suffield     2 0.1     3.91  0.391
+#>  8 498   west         3 0.1     3.91  0.391
+#>  9 441   rmj          8 0.121   3.22  0.390
+#> 10 467   nursery      3 0.0968  3.91  0.379
+#> # … with 2,843 more rows
+```
+
+## Example: mining financial articles
+
+
