@@ -1,0 +1,446 @@
+---
+title: "chapter6 examples"
+author: "Hao He"
+date: "2022-10-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringr)
+library(tidyr)
+
+```
+
+Topic modeling is a method for unsupervised classification of such documents, similar to clustering on numeric data, which finds natural groups of items even when we’re not sure what we’re looking for.
+
+
+# LDA   
+Latent Dirichlet allocation (LDA) is a particularly popular method for fitting a topic model.
+It treats each document as a mixture of topics, and each topic as a mixture of words. 
+This allows documents to “overlap” each other in terms of content, rather than being separated into discrete groups, in a way that mirrors typical use of natural language.
+
+```{r}
+library(topicmodels)
+
+data("AssociatedPress")
+AssociatedPress
+#> <<DocumentTermMatrix (documents: 2246, terms: 10473)>>
+#> Non-/sparse entries: 302031/23220327
+#> Sparsity           : 99%
+#> Maximal term length: 18
+#> Weighting          : term frequency (tf)
+
+
+# set a seed so that the output of the model is predictable
+ap_lda <- LDA(AssociatedPress, k = 2, control = list(seed = 1234))
+ap_lda
+#> A LDA_VEM topic model with 2 topics.x
+```
+
+## word-topic prob
+
+The tidytext package provides this method for extracting the per-topic-per-word probabilities, called 
+β (“beta”), from the model.
+
+```{r}
+library(tidytext)
+
+ap_topics <- tidy(ap_lda, matrix = "beta")
+ap_topics
+#> # A tibble: 20,946 × 3
+#>    topic term           beta
+#>    <int> <chr>         <dbl>
+#>  1     1 aaron      1.69e-12
+#>  2     2 aaron      3.90e- 5
+#>  3     1 abandon    2.65e- 5
+#>  4     2 abandon    3.99e- 5
+#>  5     1 abandoned  1.39e- 4
+#>  6     2 abandoned  5.88e- 5
+#>  7     1 abandoning 2.45e-33
+#>  8     2 abandoning 2.34e- 5
+#>  9     1 abbott     2.13e- 6
+#> 10     2 abbott     2.97e- 5
+#> # … with 20,936 more rows
+```
+
+find the 10 terms that are most common within each topic
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+ap_top_terms <- ap_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+ap_top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+
+As an alternative, we could consider the terms that had the greatest difference in 
+β between topic 1 and topic 2. 
+
+This can be estimated based on the log ratio of the two: log2(beta2/beta1)
+
+```{r}
+library(tidyr)
+
+beta_wide <- ap_topics %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  pivot_wider(names_from = topic, values_from = beta) %>% 
+  filter(topic1 > .001 | topic2 > .001) %>%
+  mutate(log_ratio = log2(topic2 / topic1))
+
+beta_wide
+#> # A tibble: 198 × 4
+#>    term              topic1      topic2 log_ratio
+#>    <chr>              <dbl>       <dbl>     <dbl>
+#>  1 administration 0.000431  0.00138         1.68 
+#>  2 ago            0.00107   0.000842       -0.339
+#>  3 agreement      0.000671  0.00104         0.630
+#>  4 aid            0.0000476 0.00105         4.46 
+#>  5 air            0.00214   0.000297       -2.85 
+#>  6 american       0.00203   0.00168        -0.270
+#>  7 analysts       0.00109   0.000000578   -10.9  
+#>  8 area           0.00137   0.000231       -2.57 
+#>  9 army           0.000262  0.00105         2.00 
+#> 10 asked          0.000189  0.00156         3.05 
+#> # … with 188 more rows
+```
+The words with the greatest differences between the two topics are visualized below:
+```{r}
+beta_wide %>%
+  group_by(direction = log_ratio > 0) %>%
+  slice_max(abs(log_ratio), n = 10) %>% 
+  ungroup() %>%
+  mutate(term = reorder(term, log_ratio)) %>%
+  ggplot(aes(log_ratio, term)) +
+  geom_col() +
+  labs(x = "Log2 ratio of beta in topic 2 / topic 1", y = NULL)
+```
+
+Based on the most common words, we can try to infer what is topic1 and what is topic 1.
+
+## doc-topic prob
+Besides *estimating each topic as a mixture of words*, LDA also models *each document as a mixture of topics*. We can examine the per-document-per-topic probabilities, called γ (“gamma”), with the matrix = "gamma" argument to tidy().
+
+```{r}
+ap_documents <- tidy(ap_lda, matrix = "gamma")
+ap_documents
+#> # A tibble: 4,492 × 3
+#>    document topic    gamma
+#>       <int> <int>    <dbl>
+#>  1        1     1 0.248   
+#>  2        2     1 0.362   
+#>  3        3     1 0.527   
+#>  4        4     1 0.357   
+#>  5        5     1 0.181   
+#>  6        6     1 0.000588
+#>  7        7     1 0.773   
+#>  8        8     1 0.00445 
+#>  9        9     1 0.967   
+#> 10       10     1 0.147   
+#> # … with 4,482 more rows
+```
+Each of these values is an estimated proportion of words from that document that are generated from that topic. For example, *the model estimates that only about 25% of the words in document 1 were generated from topic 1*.
+
+
+We can see that many of these documents were drawn from a mix of the two topics, but that document 6 was drawn almost entirely from topic 2, having a γ from topic 1 close to zero. To check this answer, we could tidy() the document-term matrix (see Chapter 5.1) and check what the most common words in that document were.
+
+```{r}
+tidy(AssociatedPress) %>%
+  filter(document == 6) %>%
+  arrange(desc(count))
+#> # A tibble: 287 × 3
+#>    document term           count
+#>       <int> <chr>          <dbl>
+#>  1        6 noriega           16
+#>  2        6 panama            12
+#>  3        6 jackson            6
+#>  4        6 powell             6
+#>  5        6 administration     5
+#>  6        6 economic           5
+#>  7        6 general            5
+#>  8        6 i                  5
+#>  9        6 panamanian         5
+#> 10        6 american           4
+#> # … with 277 more rows
+```
+
+# Example: the great library heist
+
+```{r}
+titles <- c("Twenty Thousand Leagues under the Sea", 
+            "The War of the Worlds",
+            "Pride and Prejudice", 
+            "Great Expectations") 
+
+library(gutenbergr)
+
+books <- gutenberg_works(title %in% titles) %>%
+  gutenberg_download(meta_fields = "title", mirror = "http://mirrors.xmission.com/gutenberg/")
+
+# no records for book"The War of the Worlds".
+```
+
+
+pre-processing: we divide these into chapters, use tidytext’s unnest_tokens() to separate them into words, then remove stop_words. We’re treating every chapter as a separate “document”
+```{r}
+library(stringr)
+
+# divide into documents, each representing one chapter
+by_chapter <- books %>%
+  group_by(title) %>%
+  mutate(chapter = cumsum(str_detect(
+    text, regex("^chapter ", ignore_case = TRUE)
+  ))) %>%
+  ungroup() %>%
+  filter(chapter > 0) %>%
+  unite(document, title, chapter)
+
+# split into words
+by_chapter_word <- by_chapter %>%
+  unnest_tokens(word, text)
+
+# find document-word counts
+word_counts <- by_chapter_word %>%
+  anti_join(stop_words) %>%
+  count(document, word, sort = TRUE)
+
+word_counts
+#> # A tibble: 104,721 × 3
+#>    document                 word        n
+#>    <chr>                    <chr>   <int>
+#>  1 Great Expectations_57    joe        88
+#>  2 Great Expectations_7     joe        70
+#>  3 Great Expectations_17    biddy      63
+#>  4 Great Expectations_27    joe        58
+#>  5 Great Expectations_38    estella    58
+#>  6 Great Expectations_2     joe        56
+#>  7 Great Expectations_23    pocket     53
+#>  8 Great Expectations_15    joe        50
+#>  9 Great Expectations_18    joe        50
+#> 10 The War of the Worlds_16 brother    50
+#> # … with 104,711 more rows
+```
+
+
+## LDA on chapters
+convert tidy data table into dtm for LDA model:
+```{r}
+chapters_dtm <- word_counts %>%
+  cast_dtm(document, word, n)
+
+chapters_dtm
+
+chapters_lda <- LDA(chapters_dtm, k = 3, control = list(seed = 1234))
+chapters_lda
+#> A LDA_VEM topic model with 3 topics.
+```
+
+Now examine per-topic-per-word probabilities.
+```{r}
+chapter_topics <- tidy(chapters_lda, matrix = "beta")
+chapter_topics
+
+# the term “joe” has an almost zero probability of being generated from topics 2, or 3, but it makes up 1.2% of topic 1.
+```
+
+use dplyr’s slice_max() to find the top 5 terms within each topic.
+```{r}
+library(tidyverse)
+
+top_terms <- chapter_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 5) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+
+
+```
+
+```{r}
+library(ggplot2)
+
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+
+
+
+## Per-document classification
+ we may want to know which topics are associated with each document.
+```{r}
+chapters_gamma <- tidy(chapters_lda, matrix = "gamma")
+chapters_gamma
+
+
+```
+Each of these values is an estimated proportion of words from that document that are generated from that topic. For example, the model estimates that each word in the Pride and Prejudice_43 document has only a 0% probability of coming from topic 1 (Great Expectation).
+
+
+First we re-separate the document name into title and chapter, after which we can visualize the per-document-per-topic probability for each.
+```{r}
+chapters_gamma <- chapters_gamma %>%
+  separate(document, c("title", "chapter"), sep = "_", convert = TRUE)
+
+chapters_gamma
+
+
+# reorder titles in order of topic 1, topic 2, etc before plotting
+chapters_gamma %>%
+  mutate(title = reorder(title, gamma * topic)) %>%
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() +
+  facet_wrap(~ title) +
+  labs(x = "topic", y = expression(gamma))
+
+# The gamma probabilities for each chapter within each book
+```
+
+Are there any cases where the topic most associated with a chapter belonged to another book? First we’d find the topic that was most associated with each chapter using slice_max(), which is effectively the “classification” of that chapter.
+```{r}
+chapter_classifications <- chapters_gamma %>%
+  group_by(title, chapter) %>%
+  slice_max(gamma) %>%
+  ungroup()
+
+chapter_classifications
+
+```
+
+
+We can then compare each to the “consensus” topic for each book (the most common topic among its chapters), and see which were most often misidentified.
+
+```{r}
+book_topics <- chapter_classifications %>%
+  count(title, topic) %>%
+  group_by(title) %>%
+  slice_max(n, n = 1) %>% 
+  ungroup() %>%
+  transmute(consensus = title, topic)
+
+chapter_classifications %>%
+  inner_join(book_topics, by = "topic") %>%
+  filter(title != consensus)
+
+```
+
+## By word assignments: augment
+
+One step of the LDA algorithm is assigning each word in each document to a topic. 
+The more words in a document are assigned to that topic, generally, the more weight (gamma) will go on that document-topic classification.
+
+take the original document-word pairs and find which words in each document were assigned to which topic. This is the job of the augment() function.  While tidy() retrieves the statistical components of the model, augment() uses a model to add information to each observation in the original data.
+
+```{r}
+assignments <- augment(chapters_lda, data = chapters_dtm)
+assignments
+
+# adds an extra column: .topic, with the topic each term was assigned to within each document.
+```
+
+
+We can combine this assignments table with the consensus book titles to find which words were incorrectly classified.
+```{r}
+assignments <- assignments %>%
+  separate(document, c("title", "chapter"), 
+           sep = "_", convert = TRUE) %>%
+  inner_join(book_topics, by = c(".topic" = "topic"))
+
+assignments
+
+# visualization of a confusion matrix
+library(scales)
+
+assignments %>%
+  count(title, consensus, wt = count) %>%
+  mutate(across(c(title, consensus), ~str_wrap(., 20))) %>%
+  group_by(title) %>%
+  mutate(percent = n / sum(n)) %>%
+  ggplot(aes(consensus, title, fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "darkblue", label = percent_format()) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = "Book words were assigned to",
+       y = "Book words came from",
+       fill = "% of assignments")
+```
+ 
+ Confusion matrix showing where LDA assigned the words from each book. Each row of this table represents the true book each word came from, and each column represents what book it was assigned to.
+ 
+ 
+What were the most commonly mistaken words?
+```{r}
+wrong_words <- assignments %>%
+  filter(title != consensus)
+
+wrong_words
+
+wrong_words %>%
+  count(title, consensus, term, wt = count) %>%
+  ungroup() %>%
+  arrange(desc(n))
+```
+For some of these wrong words(even if they appeared in Great Expectations), such as “love” and “lady”, that’s because they’re more common in Pride and Prejudice (we could confirm that by examining the counts).
+
+On the other hand, there are a few wrongly classified words that never appeared in the novel they were misassigned to. For example, we can confirm “flopson” appears only in Great Expectations, even though it’s assigned to the “Pride and Prejudice” cluster.
+
+```{r}
+word_counts %>%
+  filter(word == "flopson")
+```
+
+
+# Alternative LDA implementation
+
+The LDA() function in the topicmodels package is only one implementation of the latent Dirichlet allocation algorithm.
+
+There are other packages implement LDA algorithm.
+```{r}
+library(mallet)
+
+# create a vector with one string per chapter
+collapsed <- by_chapter_word %>%
+  anti_join(stop_words, by = "word") %>%
+  mutate(word = str_replace(word, "'", "")) %>%
+  group_by(document) %>%
+  summarize(text = paste(word, collapse = " "))
+
+# create an empty file of "stopwords"
+file.create(empty_file <- tempfile())
+docs <- mallet.import(collapsed$document, collapsed$text, empty_file)
+
+mallet_model <- MalletLDA(num.topics = 4)
+mallet_model$loadDocuments(docs)
+mallet_model$train(100)
+```
+Once the model is created, however, we can use the tidy() and augment() functions described in the rest of the chapter in an almost identical way. This includes extracting the probabilities of words within each topic or topics within each document.
+```{r}
+# word-topic pairs
+tidy(mallet_model)
+
+# document-topic pairs
+tidy(mallet_model, matrix = "gamma")
+
+# column needs to be named "term" for "augment"
+term_counts <- rename(word_counts, term = word)
+augment(mallet_model, term_counts)
+```
+
